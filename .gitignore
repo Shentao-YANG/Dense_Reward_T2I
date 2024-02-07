@@ -1,0 +1,14 @@
+
+.idea/*
+**/.idea
+*.tex
+*.ipynb
+*.pdf
+*.pptx
+backup/*
+**/backup
+__pycache__
+**/__pycache__
+*.pyc
+**/*debug*
+**/*run*.sh

@@ -1,0 +1,38 @@
+name: rldiff
+channels:
+  - pytorch
+  - defaults
+  - xformers
+  - nvidia
+dependencies:
+  - python=3.9.17
+  - pip
+  - cudatoolkit=11.3
+  - pytorch=1.13.1
+  - torchvision=0.14.1
+  - numpy=1.21
+  - xformers
+  - pytorch-cuda=11.7
+  - torchaudio==0.13.1
+  - pip:
+    - accelerate
+    - diffusers==0.16.0
+    - opencv-python
+    - imageio==2.9.0
+    - imageio-ffmpeg==0.4.2
+    - einops==0.3.0
+    - tensorboard
+    - transformers
+    - kornia
+    - fairscale
+    - importlib-metadata
+    - timm
+    - datasets
+    - huggingface_hub==0.14.1
+    - -e git+https://github.com/openai/CLIP.git@main#egg=clip
+    - hpsv2==1.1.2
+    - image-reward==1.5
+    - numpy
+    - bitsandbytes
+    - scipy
+    - triton
