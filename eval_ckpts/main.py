@@ -108,7 +108,7 @@ def eval(img_dir, prompt, metrics, rank=0, world_size=1):
                 eval_results.extend(f.readlines())
             os.remove(f"{img_dir}/eval_results.json.{rank}")
         score_dict = {metric: [] for metric in metrics}
-        score_dict[prompt] = prompt
+        score_dict["prompt"] = prompt
         for res in eval_results:
             temp = ast.literal_eval(res.strip())
             for metric in metrics:

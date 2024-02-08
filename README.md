@@ -19,7 +19,7 @@ We provide our checkpoints in `./ckpts`.
 To evaluate our checkpoints, please use the following command
 ```angular2html
 cd eval_ckpts
-torchrun --nproc_per_node $NUM_GPUS_TO_USE --standalone main --type="both_seen_unseen" --eval_generated_imgs=1 --metrics="image_reward,aesthetic" --outdir="./outputs"
+torchrun --nproc_per_node $NUM_GPUS_TO_USE --standalone main.py --type="both_seen_unseen" --eval_generated_imgs=1 --metrics="image_reward,aesthetic" --outdir="./outputs"
 ```
 Note:
 - `$NUM_GPUS_TO_USE` is the number of gpus you want to use.
