@@ -155,7 +155,7 @@ def get_default_parser():
         "--pl_weights_name",
         type=str,
         default="gamma",
-        help="Weighting scheme for the step-wise log density rario. (default: power of the discount factor)",
+        help="Weighting scheme for the step-wise log density ratio. (default: power of the discount factor)",
     )
 
     parser.add_argument(
@@ -191,12 +191,6 @@ def get_default_parser():
         default=1,
         help="In training the policy, the number of comparison tuples from each prompt. "
              "Should be smaller than (`num_traj_for_pref_comp` choose `pl_loss_num_traj`), which may be too slow for training",
-    )
-    parser.add_argument(
-        "--min_snr_vmax",
-        type=float,
-        default=5.,
-        help="Maximum value in the Min-SNR schedule",
     )
     parser.add_argument(
         "--num_rollout_trajs",
@@ -276,14 +270,6 @@ def get_default_parser():
         ),
     )
     parser.add_argument(
-        "--max_train_samples",
-        type=int,
-        default=None,
-        help=(
-            "For debugging purposes or quicker training, truncate the number of training examples to this value if set."
-        ),
-    )
-    parser.add_argument(
         "--output_dir",
         type=str,
         default="results",
@@ -346,9 +332,6 @@ def get_default_parser():
         ),
     )
     parser.add_argument(
-        "--use_ema", action="store_true", default=False, help="Whether to use EMA model."
-    )
-    parser.add_argument(
         "--non_ema_revision",
         type=str,
         default=None,
@@ -357,15 +340,6 @@ def get_default_parser():
             "Revision of pretrained non-ema model identifier. Must be a branch,"
             " tag or git identifier of the local or remote repository specified"
             " with --pretrained_model_name_or_path."
-        ),
-    )
-    parser.add_argument(
-        "--dataloader_num_workers",
-        type=int,
-        default=0,
-        help=(
-            "Number of subprocesses to use for data loading. 0 means that the"
-            " data will be loaded in the main process."
         ),
     )
     parser.add_argument(

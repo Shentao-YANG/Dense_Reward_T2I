@@ -10,6 +10,9 @@ from PIL import Image
 from clint.textui import progress
 from hpsv2.src.open_clip import create_model_and_transforms, get_tokenizer
 from transformers import CLIPTextModel, CLIPTokenizer
+import time, random
+from utils import print_banner
+
 
 SCORERS = dict()
 
@@ -36,13 +39,22 @@ class ImageRewardScorer:
         self.device = device
         self.weight_dtype = torch.float32
 
-    def load(self):
+    def _load(self):
         self.reward_tokenizer = CLIPTokenizer.from_pretrained(
             "openai/clip-vit-large-patch14"
         )
         self.reward_model = imagereward.load("ImageReward-v1.0")
         self.reward_model.to(device=self.device, dtype=self.weight_dtype)
         self.reward_model.requires_grad_(False)
+
+    def load(self):
+        while not self.is_loaded():
+            try:
+                self._load()
+            except FileNotFoundError:
+                print_banner(
+                    f"Device {self.device}: FileNotFoundError in `ImageRewardScorer.load()`, try reloading until success!!!")
+                time.sleep(0.1 * random.random())
 
     def unload(self):
         try:
@@ -109,7 +121,7 @@ class HPSv2Scorer:
         if not os.path.exists(self.root_path):
             os.makedirs(self.root_path, exist_ok=True)
 
-    def load(self):
+    def _load(self):
         model, _, preprocess_val = create_model_and_transforms(
             'ViT-H-14',
             'laion2B-s32B-b79K',
@@ -149,6 +161,15 @@ class HPSv2Scorer:
         self.tokenizer = get_tokenizer('ViT-H-14')
         model = self.model.to(self.device)
         model.eval()
+
+    def load(self):
+        while not self.is_loaded():
+            try:
+                self._load()
+            except FileNotFoundError:
+                print_banner(
+                    f"Device {self.device}: FileNotFoundError in `HPSv2Scorer.load()`, try reloading until success!!!")
+                time.sleep(0.1 * random.random())
 
     def unload(self):
         try:
@@ -220,7 +241,7 @@ class AestheticScore(nn.Module):
         super().__init__()
         self.device = device
 
-    def load(self):
+    def _load(self):
         self.root_path = os.path.expanduser('~/.cache/aesthetic')
         self.clip_model, self.preprocess = clip.load(
             "ViT-L/14", device=self.device, jit=False, download_root=self.root_path)
@@ -252,6 +273,15 @@ class AestheticScore(nn.Module):
         self.mlp.to(self.device)
         self.mlp.requires_grad_(False)
         self.mlp.eval()
+
+    def load(self):
+        while not self.is_loaded():
+            try:
+                self._load()
+            except FileNotFoundError:
+                print_banner(
+                    f"Device {self.device}: FileNotFoundError in `AestheticScore.load()`, try reloading until success!!!")
+                time.sleep(0.1 * random.random())
 
     def unload(self):
         try:

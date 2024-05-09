@@ -73,6 +73,7 @@ def main():
         mixed_precision=args.mixed_precision,
         log_with=args.report_to,
         project_config=accelerator_project_config,
+        step_scheduler_with_optimizer=False,
     )
 
     args.g_batch_size = math.ceil(args.g_batch_size / accelerator.num_processes)
@@ -116,7 +117,7 @@ def main():
         weight_dtype = torch.bfloat16
 
     if accelerator.is_main_process:
-        accelerator.print(utils.make_banner(f"SET torch_dtype = {weight_dtype} !!!", front=True, back=True))
+        utils.print_banner(f"SET torch_dtype = {weight_dtype} !!!", front=True, back=True)
 
     if args.sft_initialization == 0:
         pipe = StableDiffusionPipelineExtended.from_pretrained(
@@ -162,19 +163,6 @@ def main():
     unet.to(accelerator.device, dtype=weight_dtype)
     unet_copy.to(accelerator.device, dtype=weight_dtype)
 
-    # Create EMA for the unet.
-    if args.use_ema:
-        ema_unet = UNet2DConditionModel.from_pretrained(
-            args.pretrained_model_name_or_path,
-            subfolder="unet",
-            revision=args.revision,
-        )
-        ema_unet = EMAModel(
-            ema_unet.parameters(),
-            model_cls=UNet2DConditionModel,
-            model_config=ema_unet.config,
-        )
-
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
             import xformers
@@ -189,7 +177,7 @@ def main():
                 )
             unet.enable_xformers_memory_efficient_attention()
             if accelerator.is_main_process:
-                accelerator.print(utils.make_banner("Using xFormers memory efficient attention!!", front=True, back=True))
+                utils.print_banner("Using xFormers memory efficient attention!!", front=True, back=True)
         else:
             raise ValueError(
                 "xformers is not available. Make sure it is installed correctly"
@@ -233,12 +221,12 @@ def main():
     # Enable TF32 for faster training on Ampere GPUs,
     if args.gradient_checkpointing:
         if accelerator.is_main_process:
-            accelerator.print(utils.make_banner("Using gradient checkpointing!!!", front=True, back=True))
+            utils.print_banner("Using gradient checkpointing!!!", front=True, back=True)
         unet.enable_gradient_checkpointing()
 
     if any(x in torch.cuda.get_device_name() for x in ("A", "30", "40")) or args.allow_tf32:
         if accelerator.is_main_process:
-            accelerator.print(utils.make_banner("Using TF32 on Ampere GPUs!!!", front=True, back=True))
+            utils.print_banner("Using TF32 on Ampere GPUs!!!", front=True, back=True)
         torch.backends.cuda.matmul.allow_tf32 = True
 
     if args.scale_lr:
@@ -250,30 +238,21 @@ def main():
         )
 
     # Initialize the optimizer
-    if accelerator.state.deepspeed_plugin is not None:
-        accelerator.state.deepspeed_plugin.deepspeed_config['train_micro_batch_size_per_gpu'] = args.p_batch_size
-        accelerator.state.deepspeed_plugin.deepspeed_config['gradient_accumulation_steps'] = args.gradient_accumulation_steps
-        accelerator.state.deepspeed_plugin.gradient_accumulation_steps = args.gradient_accumulation_steps
+    if args.use_8bit_adam:
+        try:
+            import bitsandbytes as bnb
+        except ImportError as exc:
+            raise ImportError(
+                "Please install bitsandbytes to use 8-bit Adam. You can do so by"
+                " running `pip install bitsandbytes`"
+            ) from exc
 
-        from deepspeed.ops.adam import DeepSpeedCPUAdam
-        optimizer_cls = DeepSpeedCPUAdam
-        args.use_8bit_adam = False
+        optimizer_cls = bnb.optim.AdamW8bit
     else:
-        if args.use_8bit_adam:
-            try:
-                import bitsandbytes as bnb
-            except ImportError as exc:
-                raise ImportError(
-                    "Please install bitsandbytes to use 8-bit Adam. You can do so by"
-                    " running `pip install bitsandbytes`"
-                ) from exc
-
-            optimizer_cls = bnb.optim.AdamW8bit
-        else:
-            optimizer_cls = torch.optim.AdamW
+        optimizer_cls = torch.optim.AdamW
 
     if accelerator.is_main_process:
-        accelerator.print(utils.make_banner(f"Optimizer class: {optimizer_cls}", front=True, back=True))
+        utils.print_banner(f"Optimizer class: {optimizer_cls}", front=True, back=True)
 
     optimizer = optimizer_cls(
         lora_layers.parameters(),
@@ -311,8 +290,8 @@ def main():
             else:
                 prompt_list.append(prompt)
         if accelerator.is_main_process:
-            accelerator.print(utils.make_banner(f"Loaded {len(prompt_list)} prompts in categories: `{args.prompt_category}`! Examples:\n", front=True, back=False))
-            accelerator.print(*prompt_list[:3], sep="\n")
+            utils.print_banner(f"Loaded {len(prompt_list)} prompts in categories: `{args.prompt_category}`! Examples:\n", front=True, back=False)
+            print(*prompt_list[:3], sep="\n")
 
     # Map-style prompt dataset
     def _my_data_iterator(data: List[str], batch_size, num_processes):
@@ -335,24 +314,15 @@ def main():
         prompt_list, batch_size=args.g_batch_size, num_processes=accelerator.num_processes)
     data_iterator = accelerator.prepare(data_iterator)
 
-    if accelerator.state.deepspeed_plugin is not None:
-        from deepspeed.runtime.lr_schedules import WarmupLR
-        assert args.lr_scheduler in ("constant", "constant_with_warmup")
-        lr_scheduler = WarmupLR(
-            optimizer=optimizer,
-            warmup_max_lr=args.learning_rate,
-            warmup_num_steps=args.lr_warmup_steps,
-        )
-    else:
-        lr_scheduler = get_scheduler(
-            args.lr_scheduler,
-            optimizer=optimizer,
-            num_warmup_steps=args.lr_warmup_steps,
-            num_training_steps=args.max_train_steps,
-        )
+    lr_scheduler = get_scheduler(
+        args.lr_scheduler,
+        optimizer=optimizer,
+        num_warmup_steps=args.lr_warmup_steps,
+        num_training_steps=args.max_train_steps,
+    )
 
     if accelerator.is_main_process:
-        accelerator.print(utils.make_banner(f"using `lr_scheduler = {lr_scheduler}`", front=True, back=True))
+        utils.print_banner(f"using `lr_scheduler = {lr_scheduler}`", front=True, back=True)
 
     # Prepare everything with our `accelerator`.
     if args.multi_gpu:
@@ -363,8 +333,6 @@ def main():
         lora_layers, optimizer, lr_scheduler = accelerator.prepare(
             lora_layers, optimizer, lr_scheduler
         )
-    if args.use_ema:
-        ema_unet.to(accelerator.device)
 
     if accelerator.is_main_process:
         accelerator.init_trackers(project_name="text2image", config=vars(args))
@@ -393,19 +361,10 @@ def main():
     if args.pl_weights_name == "gamma":
         # [γ^0, γ^1, ..., γ^49]
         if accelerator.is_main_process:
-            accelerator.print(utils.make_banner("Using gamma-weighting scheme for the policy !!!", front=True, back=True))
+            utils.print_banner("Using gamma-weighting scheme for the policy !!!", front=True, back=True)
         policy_loss_weights = (torch.tensor(args.pl_gamma)
                                .pow(torch.tensor(range(replay_buffer.num_denosing_steps), dtype=torch.float))
                                .numpy())
-    elif args.pl_weights_name == "reci_snr":    # 1/snr to emphasis early stage of the reverse chain
-        if accelerator.is_main_process:
-            accelerator.print(utils.make_banner("Using Reciprocal SNR weighting scheme for the policy !!!", front=True, back=True))
-        policy_loss_weights = (1. / utils.get_snr_schedule(pipe.scheduler, 50, accelerator.device))
-    elif args.pl_weights_name == "reci_min_snr":    # 1/min_snr to emphasis early stage of the reverse chain
-        vmax = args.min_snr_vmax
-        if accelerator.is_main_process:
-            accelerator.print(utils.make_banner(f"Using Reciprocal Min-SNR weighting scheme for the policy with vmax={vmax} !!!", front=True, back=True))
-        policy_loss_weights = (1. / utils.get_snr_schedule(pipe.scheduler, 50, accelerator.device, vmax=vmax))
     else:
         raise NotImplementedError(f"Unsupported policy-loss weighting-scheme: {args.pl_weights_name}")
 
@@ -439,8 +398,8 @@ def main():
         utils.evaluate_saved_imgs_multiprompts(os.path.join(args.output_dir, "saved_imgs"), scorer_ensemble, accelerator=accelerator)
 
     if accelerator.is_main_process:
-        accelerator.print(utils.make_banner(f"Finished Exp-{args.expid} !!! Used time {datetime.now() - start_time} !!!",
-                                            symbol="*", front=True, back=True))
+        utils.print_banner(f"Finished Exp-{args.expid} !!! Used time {datetime.now() - start_time} !!!",
+                           symbol="*", front=True, back=True)
 
 
 if __name__ == "__main__":

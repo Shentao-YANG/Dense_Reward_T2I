@@ -29,16 +29,6 @@ class TrainPolicyLogData:
 COLLECTIVE_FN = "broadcast"
 
 
-def zeros_multigpu(*shape, world_size):
-    return [torch.zeros(shape, device=f"cuda:{i}") for i in range(world_size)]
-
-
-def all_gather_multigpu(x, world_size, dim=0):
-    tensor_list = zeros_multigpu(x.shape, world_size=world_size)
-    dist.all_gather(tensor_list, x)
-    return torch.cat(tensor_list, dim=dim)
-
-
 class PreferenceBasedPolicyTrainer:
     def __init__(
             self,
@@ -83,7 +73,7 @@ class PreferenceBasedPolicyTrainer:
         self.train_log = TrainPolicyLogData()
 
         # soft-clipping on the log space, should be around log(1) = 0
-        self.soft_clip = partial(torch.clamp, min=(-args.log_ratio_clip), max=args.log_ratio_clip)
+        self.clip = partial(torch.clamp, min=(-args.log_ratio_clip), max=args.log_ratio_clip)
 
         self.policy_update_steps = 0
         self.policy_update_steps_after_rollout = 0
@@ -230,25 +220,7 @@ class PreferenceBasedPolicyTrainer:
 
                     if dist.is_available() and torch.cuda.is_available() and dist.is_initialized():
                         if self.world_size > 1:
-                            if COLLECTIVE_FN == "all_gather":
-                                latents_list = all_gather_multigpu(
-                                    torch.stack(latents_list, dim=0).to(self.rank), world_size=self.world_size, dim=1
-                                ).cpu()
-                                reward_list = all_gather_multigpu(reward_list.to(self.rank), world_size=self.world_size).cpu()
-                                unconditional_prompt_embeds = all_gather_multigpu(
-                                    unconditional_prompt_embeds.to(self.rank), world_size=self.world_size).cpu()
-                                guided_prompt_embeds = all_gather_multigpu(
-                                    guided_prompt_embeds.to(self.rank), world_size=self.world_size).cpu()
-                                log_prob_list = all_gather_multigpu(torch.stack(log_prob_list, dim=0).to(self.rank),
-                                                                    world_size=self.world_size).cpu()
-                                self.replay_buffer.add_samples(
-                                    latents_list=latents_list,
-                                    reward_list=reward_list,
-                                    unconditional_prompt_embeds=unconditional_prompt_embeds,
-                                    guided_prompt_embeds=guided_prompt_embeds,
-                                    log_prob_list=log_prob_list
-                                )
-                            elif COLLECTIVE_FN == "broadcast":
+                            if COLLECTIVE_FN == "broadcast":
                                 self.accelerator.wait_for_everyone()
                                 self.broadcast_buffer(dict(
                                     latents_list=latents_list,
@@ -276,6 +248,12 @@ class PreferenceBasedPolicyTrainer:
         assert final_reward.shape == (self.args.p_batch_size, self.args.pl_loss_num_traj)
 
         logits = []
+        # all trajectories should use the same set of sampled timesteps
+        sampled_time_steps = self.np_generator.choice(batch["timestep"].shape[2],
+                                                      size=num_steps_est_logits,
+                                                      replace=True,
+                                                      p=self.policy_loss_weights
+                                                      )
 
         for traj_idx in range(batch["timestep"].shape[1]):
             batch_guided_prompt_embeds = batch["guided_prompt_embeds"][:, traj_idx]
@@ -289,11 +267,6 @@ class PreferenceBasedPolicyTrainer:
                 batch_promt_embeds = batch_guided_prompt_embeds
 
             log_diff = 0.  # expectation of log(density ratio) over the entire trajectory
-            sampled_time_steps = self.np_generator.choice(batch["timestep"].shape[2],
-                                                          size=num_steps_est_logits,
-                                                          replace=True,
-                                                          p=self.policy_loss_weights
-                                                          )
 
             for time_idx in sampled_time_steps:
                 batch_state = batch["state"][:, traj_idx, time_idx]
@@ -319,13 +292,13 @@ class PreferenceBasedPolicyTrainer:
                     if self.policy_update_steps <= self.no_reg_pi_init_warmup_steps:   # no regularization
                         log_pi_theta_minus_log_pi_init = log_prob       # no clipping since we do not have log-density-ratio here
                     else:   # with regularization
-                        log_pi_theta_minus_log_pi_init = self.soft_clip(log_prob - log_prob_init)  # torch.Size([p_batch_size]); clipping on the log space
+                        log_pi_theta_minus_log_pi_init = self.clip(log_prob - log_prob_init)  # torch.Size([p_batch_size]); clipping on the log space
                     log_diff_step_t += log_pi_theta_minus_log_pi_init
                 if self.args.reg_to_pi_old:
                     if self.policy_update_steps_after_rollout <= self.no_reg_pi_old_warmup_steps:   # no regularization
                         log_pi_theta_minus_log_pi_old = log_prob
                     else:   # with regularization
-                        log_pi_theta_minus_log_pi_old = self.soft_clip(log_prob - batch_log_pi_old_step_t)
+                        log_pi_theta_minus_log_pi_old = self.clip(log_prob - batch_log_pi_old_step_t)
                     log_diff_step_t += log_pi_theta_minus_log_pi_old
 
                 assert log_diff_step_t.requires_grad
@@ -461,17 +434,15 @@ class PreferenceBasedPolicyTrainer:
                 self.optimizer.zero_grad(set_to_none=True)
                 for accum_step in range(self.args.gradient_accumulation_steps):
                     if accum_step < self.args.gradient_accumulation_steps - 1:
-                        with self.accelerator.no_sync(self.unet):
+                        with self.accelerator.no_sync(self.wrapped_unet):
                             self.train_policy_func()
                     else:
                         self.train_policy_func()
 
                 if self.accelerator.sync_gradients:
                     norm = self.accelerator.clip_grad_norm_(self.unet.parameters(), self.args.clip_norm)
-                    if self.accelerator.state.deepspeed_plugin is None:
-                        # `norm` will be none if using deepspeed, so will only record grad_norm when not using deepspeed
-                        self.train_log.avg_grad_norm = self.train_log.avg_grad_norm * ((self.policy_update_steps - 1.) / self.policy_update_steps) \
-                                                   + norm.item() / self.policy_update_steps
+                    self.train_log.avg_grad_norm = self.train_log.avg_grad_norm * ((self.policy_update_steps - 1.) / self.policy_update_steps) \
+                                               + norm.item() / self.policy_update_steps
 
                 self.optimizer.step()
                 self.lr_scheduler.step()
@@ -495,16 +466,14 @@ class PreferenceBasedPolicyTrainer:
                         f"|step_grad_norm:{norm:.4f}" \
                         f"|train_reward:{[round(x, 2) for x in curr_avg_rew.tolist()]}" \
                         f"|used time:{datetime.now() - start_time}"
-                    if self.accelerator.is_main_process:
-                        self.accelerator.print(make_banner(s, front=True, back=True))  # only print on the main process
+                    print_banner(make_banner(s, front=True, back=True))  # only print on the main process
 
                 if self.accelerator.sync_gradients:
                     if self.policy_update_steps % self.args.checkpointing_steps == 0:
                         if self.accelerator.is_main_process:
                             save_path = os.path.join(self.args.output_dir, f"checkpoint-{self.policy_update_steps}")
                             self.accelerator.save_state(output_dir=save_path)
-                            if self.accelerator.is_main_process:
-                                self.accelerator.print(f"Saved state to {save_path}")
+                            print(f"Saved state to {save_path}")
 
                 # Save model per interval
                 if self.policy_update_steps % self.args.save_interval == 0:
