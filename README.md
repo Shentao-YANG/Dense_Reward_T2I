@@ -1,4 +1,20 @@
-# A Dense Reward View on Aligning Text-to-Image Diffusion with Preference
+# A Dense Reward View on Aligning Text-to-Image Diffusion with Preference (ICML'24)
+
+Source code for the single and multiple experiments in *A Dense Reward View on Aligning Text-to-Image Diffusion with Preference*.
+[[Paper]](https://arxiv.org/abs/2402.08265).
+
+
+Bibtex:
+```angular2html
+@inproceedings{
+yang2024adensereward,
+title={A Dense Reward View on Aligning Text-to-Image Diffusion with Preference},
+author={Shentao Yang and Tianqi Chen and Mingyuan Zhou},
+booktitle={Forty-first International Conference on Machine Learning},
+year={2024},
+url={https://openreview.net/forum?id=xVXnXk9I3I}
+}
+```
 
 ## Dependency
 
@@ -32,6 +48,8 @@ As a minimal example, our multiple prompt experiments can be run by the followin
 ```angular2html
 accelerate launch train_t2i.py --single_flag=0 --expid="multiple" 
 ```
+The above command is a minimal example, please check `parse_args.py` for available flags.
+
 *Declaimer: The HPSv2 train set has not been officially released at this moment. We are currently in the process of consulting with the HPSv2's authors on including those prompts in our repository. For now, we temporarily use the drawbench prompts as a substitution* 
 
 
